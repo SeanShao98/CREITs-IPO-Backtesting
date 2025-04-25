@@ -1,6 +1,6 @@
 # Backtesting of C-REITs IPO strategy returns
 # Created: 2024/8/21
-# Modified: 2024/11/29
+# Modified: 2025/1/10
 # Author: yifu.shao@CICC
 #
 # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
@@ -101,16 +101,16 @@ rm(dt_typedic)
 
 ## restrict
 dt_restrict <- readxl::read_xlsx("限售.xlsx") %>% as.data.table()
-dt_restrict[, name := fuzzy_vlookup(名称, unique(dt_refined$fname))]
+dt_restrict[, name := fuzzy_vlookup(`名称`, unique(dt_refined$fname))]
 dt_restrict[name == "博时蛇口产园REIT", name := "津开产园"]
 dt_restrict[, code := vlookup(name, unique(dt_refined[, .(fname, fcode)]))]
 ## offline rate
 dt_rate <- readxl::read_xlsx("比例公告目录.xlsx") %>% as.data.table()
-dt_rate[, fname := vlookup(证券代码, unique(dt_refined[, .(fcode, fname)]))]
+dt_rate[, fname := vlookup(`证券代码`, unique(dt_refined[, .(fcode, fname)]))]
 ## combine
-dt_refined[, ofrate    := vlookup(fcode, dt_rate[, .(证券代码, 网下比例)])]
-dt_refined[, pbrate    := vlookup(fcode, dt_rate[, .(证券代码, 公众比例)])]
-dt_refined[, fname     := vlookup(fcode, dt_rate[, .(证券代码, 证券简称)])]
+dt_refined[, ofrate    := vlookup(fcode, dt_rate[, .(`证券代码`, `网下比例`)])]
+dt_refined[, pbrate    := vlookup(fcode, dt_rate[, .(`证券代码`, `公众比例`)])]
+dt_refined[, fname     := vlookup(fcode, dt_rate[, .(`证券代码`, `证券简称`)])]
 dt_refined[, restrict  := fcode %in% dt_restrict$code]
 
 # 3. REITs info ------------------------------------------------
@@ -123,34 +123,34 @@ dt_info <- read_xlsx("REITs基金信息-v2.xlsx", sheet = "Sheet1") %>%
 dt_return <- read_xlsx("REITs基金收益率-v2.xlsx", sheet = "Sheet1") %>%
   as.data.table() %>%
   `[`(, c("plist", "po_1", "pc_1", "pc_4", "pc_5", "pc_10", "pc_20", "pc_today") :=
-        .(发行价, 首日开盘价, 首日收盘价, 第4日收盘价,
-          第5日收盘价, 第10日收盘价, 第20日收盘价, `最新收盘价（后复权）`))
+        .(`发行价`, `首日开盘价`, `首日收盘价`, `第4日收盘价`,
+          `第5日收盘价`, `第10日收盘价`, `第20日收盘价`, `最新收盘价（后复权）`))
 
 dt_value <- read_xlsx("REITs估值-v2.xlsx", sheet = 2) %>%
   as.data.table() %>%
   `[`(, c("PNAV_1", "PNAV_4", "PNAV_5", "PNAV_10", "PNAV_20") :=
-        .(首日收盘价/NAV, 第4日收盘价/NAV, 第5日收盘价/NAV,
-          第10日收盘价/NAV, 第20日收盘价/NAV)) %>%
+        .(`首日收盘价`/NAV, `第4日收盘价`/NAV, `第5日收盘价`/NAV,
+          `第10日收盘价`/NAV, `第20日收盘价`/NAV)) %>%
   `[`(, c("vol_1", "vol_4", "vol_5", "vol_10", "vol_20") :=
         .(`成交量/万0`, `成交量/万4`, `成交量/万5`,
           `成交量/万10`, `成交量/万20`)) %>%
   `[`(, c("turnover_1", "turnover_4", "turnover_5", "turnover_10", "turnover_20") :=
-        .(换手率0, 换手率4, 换手率5, 换手率10, 换手率20)) %>%
-  `[`(, c("Listdate", "NAV") := .(上市日期, NAV))
+        .(`换手率0`, `换手率4`, `换手率5`, `换手率10`, `换手率20`)) %>%
+  `[`(, c("Listdate", "NAV") := .(`上市日期`, NAV))
 
 dt_ofline <- dt_refined[
-  dt_value[, .(证券代码, Listdate
+  dt_value[, .(`证券代码`, Listdate
                ## PNAV_1, PNAV_4, PNAV_5, PNAV_10, PNAV_20,
                ## PV_1 = PV0, PV_4 = PV4, PV_5 = PV5, PV_10 = PV10, PV_20 = PV20,
                ,vol_1, vol_4, vol_5, vol_10, vol_20
                ## turnover_1, turnover_4, turnover_5, turnover_10, turnover_20
   )],
-  on = .(fcode = 证券代码)
+  on = .(fcode = `证券代码`)
 ]
 
 dt_ofline <- dt_ofline[
-  dt_return[, .(证券代码, plist, pc_1, pc_4, pc_5, pc_10, pc_20, pc_today)],
-  on = .(fcode = 证券代码)
+  dt_return[, .(`证券代码`, plist, pc_1, pc_4, pc_5, pc_10, pc_20, pc_today)],
+  on = .(fcode = `证券代码`)
 ]
 
 # remove newly listed fund
@@ -163,16 +163,16 @@ dt_ofline %<>%
 
 # full data
 dt_ofline <- dt_ofline[
-  dt_info[, .(fcode = 证券代码,
-              ftype = 资产类型, Tdate = 网下发售起始日, Ldate = 网下发售截止日,
-              p_up = 询价区间上限, p_low = 询价区间下限,
-              str_place = 战略配售份额, str_buy = 战略投资方认购份额,
-              ofl_place = 网下配售份额, ofl_buy = 网下认购份额,
-              ofl_multi = 网下认购倍数,
-              pub_place = 公众配售份额, pub_buy = 公众认购份额)],
+  dt_info[, .(fcode = `证券代码`,
+              ftype = `资产类型`, Tdate = `网下发售起始日`, Ldate = `网下发售截止日`,
+              p_up = `询价区间上限`, p_low = `询价区间下限`,
+              str_place = `战略配售份额`, str_buy = `战略投资方认购份额`,
+              ofl_place = `网下配售份额`, ofl_buy = `网下认购份额`,
+              ofl_multi = `网下认购倍数`,
+              pub_place = `公众配售份额`, pub_buy = `公众认购份额`)],
   on = .(fcode)
 ] %>%
-  `[`(, dividend := vlookup(fcode, dt_value[, .(证券代码, 预测分派率)])) %>%
+  `[`(, dividend := vlookup(fcode, dt_value[, .(`证券代码`, `预测分派率`)])) %>%
   `[`(dividend == 0, dividend := NA) %>%
   mutate(across(p_up:dividend, ~ as.numeric(.))) %>%
   mutate(ftype = recode(ftype,
@@ -209,15 +209,16 @@ dt_ofline_i %<>%
       c("基金公司或其资产管理子公司-对多专户理财产品",
         "基金公司或其资产管理子公司-对-专户理财产品",
         "基金公司或其资产管理计划") ~
-        c("基金公司"),
-      c("保险资金投资账户", "保险资金证券投资账户") ~
-        c("保险资金投资账户"),
+        c("公募基金专户"),
+      c("保险资金投资账户", "保险资金证券投资账户", "保险机构资产管理产品") ~
+        c("保险机构"),
       c("期货公司或其资产管理子公司-对-资产管理计划",
         "期货公司或其资产管理子公司-对多资产管理计划") ~
         c("期货公司"),
       c("证券公司单-资产管理计划", "证券公司定向资产管理计划",
         "证券公司集合资产管理计划") ~
-        c("证券公司"),
+        c("券商资管计划"),
+      c("机构自营投资账户") ~ c("券商自营"),
       .default = itype
     )
   )
@@ -231,12 +232,15 @@ dt_ofline_j <- dt_ofline %>%
 dt_refined %>%
   # filter(note == "有效报价") %>%
   mutate(
-    qty_real = qty * ofrate,
-    listdate = vlookup(fcode, dt_ofline_j[, .(fcode, Listdate)]),
-    value_real = qty_real * vlookup(fcode, dt_ofline_j[, .(fcode, plist)])
+    Listdate = vlookup(fcode, dt_ofline_j[, .(fcode, Listdate)]),
+    value = qty * vlookup(fcode, dt_ofline_j[, .(fcode, plist)]),
+    itype = str_replace_all(itype, "-", "一"),
+    ofrate = ofrate * 100
   ) %>%
-  select(fcode, fname, iname, qty_real, itype, value_real, listdate, note, qty) %>%
-  write.xlsx(file = "网下明细.xlsx")
+  select(fcode, fname, iname, qty, itype, value, Listdate, note, ofrate) %>%
+  `names<-`(c("证券代码", "证券简称", "网下账户名称", "拟认购份额", "网下账户类型(穿透)",
+              "拟认购金额", "上市日期", "备注", "网下确认比例%")) %>%
+  write.xlsx(file = "REITs网下拟认购明细.xlsx")
 
 # 4. strategy return ------------------------------------------------
 ## 本节计算打新收益
@@ -289,7 +293,7 @@ dt_ofline_j %<>% apply(MARGIN = 1, function(fc.ofl) {
   t0_ofl <- fc.ofl["Ldate"]; t0_pub <- fc.ofl["Tdate"] # 缴款日
   t_ref <- date_add(fc.ofl["Ldate"], 2)                # 退款日
   t1_norst <- date_add(fc.ofl["Listdate"], -1)         # 无限售卖出日
-  t1_rst <- date_add(fc.ofl["Listdate"], 3-1)          # 有限售剩余卖出日
+  t1_rst <- date_add(fc.ofl["Listdate"], 3 - 1)        # 有限售剩余卖出日
   ### 溢价
   RP1 <- as.numeric(fc.ofl["pc_1"]) / as.numeric(fc.ofl["plist"])
   RP4 <- as.numeric(fc.ofl["pc_4"]) / as.numeric(fc.ofl["plist"])
@@ -308,7 +312,10 @@ dt_ofline_j %<>% apply(MARGIN = 1, function(fc.ofl) {
   OC_pub <- prod(r_gc01(t0_pub, t1_norst, dt_fcost))
   R0_pub <- prod(r_gc01(t_ref,  t1_norst, dt_fcost))
   R_pub <- pbrate * RP1 + (1 - pbrate) * R0_pub - OC_pub
-  R_pub_4 <- R_pub * prod(r_gc01(fc.ofl["Listdate"], t1_rst, dt_fcost))
+  ### 公众第4日收益
+  OC_pub_4 <- prod(r_gc01(t0_pub, t1_rst, dt_fcost))
+  R0_pub_4 <- prod(r_gc01(t_ref,  t1_rst, dt_fcost))
+  R_pub_4 <- pbrate * RP4 + (1 - pbrate) * R0_pub_4 - OC_pub_4
   ### 回收结果
   data.table(
     "fcode" = fc.ofl["fcode"],
@@ -327,8 +334,11 @@ dt_ofline_j %<>% apply(MARGIN = 1, function(fc.ofl) {
 ## 长时间持有（60日panel）
 dt_dxr_D60 <- readxl::read_xlsx("REITs基金收益率-v2.xlsx", sheet = "D60-Value") %>%
   as.data.table() %>%
-  rename(fcode = 证券代码, fname = 证券名称, Listdate = 上市日期,
-         po_d0 = 首日开盘价, plist = 发行价) %>%
+  rename(fcode = `证券代码`, fname = `证券名称`, Listdate = `上市日期`,
+         po_d0 = `首日开盘价`, plist = `发行价`) %>%
+  mutate(
+    `61` = vlookup(fcode, dt_return[, .(`证券代码`, pc_today)])
+  ) %>%
   select(-c(po_d0, plist)) %>%
   pivot_longer(
     cols = -c("fcode", "fname", "Listdate"),
@@ -340,7 +350,7 @@ dt_dxr_D60 <- readxl::read_xlsx("REITs基金收益率-v2.xlsx", sheet = "D60-Val
     days.listed = which(shibor$date == Listdate)
   ) %>%
   ungroup() %>%
-  filter(tt + 1 <= days.listed) %>%
+  filter((tt + 1 <= days.listed) | tt == 61) %>%
   select(-days.listed) %>%
   left_join(
     dt_ofline_j[, .(fcode, ofrate, pbrate, restrict, Ldate, Tdate, plist)],
@@ -363,11 +373,11 @@ dt_dxr_D60 <- readxl::read_xlsx("REITs基金收益率-v2.xlsx", sheet = "D60-Val
 dt_str <- readxl::read_excel(path = "REITs获配机构明细20241129.xlsx", sheet = 1) %>%
   setDT() %>%
   `[`(, .(
-    fcode = 万得代码,
-    fname = 项目简称,
-    iname = 配售对象名称,
+    fcode = `万得代码`,
+    fname = `项目简称`,
+    iname = `配售对象名称`,
     is_corr = `原始权益人或其关联方（Y/N）`,
-    type_cicc = 投资者类型,
+    type_cicc = `投资者类型`,
     qty = `实际配售数量(万份)`
     #pct = `占总份额比例(%)`
   ))
@@ -440,10 +450,10 @@ dt_smv <- readxl::read_excel(path = "打新数据-v2.xlsx",
 dt_term <- readxl::read_excel(path = "打新数据-v2.xlsx",
                               sheet = "现金流剩余期限", col_names = F) %>%
   `names<-`(unlist(.[1, ])) %>% `[`(-1, ) %>% as.data.table() %>%
-  `[`(, .(fcode = 代码,
-          term = as.numeric(剩余期限),
-          estab_date = 基金成立日,
-          end_date = 权属到期日))
+  `[`(, .(fcode = `代码`,
+          term = as.numeric(`剩余期限`),
+          estab_date = `基金成立日`,
+          end_date = `权属到期日`))
 
 dt_sm <- dt_smdivd %>% setDT() %>%
   `[`(as.data.table(dt_smv)[, .(fcode, date, smv)], on = .(fcode, date)) %>%
@@ -473,7 +483,6 @@ dt_sm <- dt_sm %>%
     "保障性租赁住房" = "保障性租赁住房",
     "消费基础设施" = "商业"
   ))
-
 
 dt_ofline_j %<>%
   mutate(
@@ -576,7 +585,6 @@ dt_sector <- read.xlsx(
   ) %>%
   right_join(dt_sector, by = c("date"))
 
-
 # 8. IRR ------------------------------------------------
 irr_cal <- function(pv, term, cf) {
   T_1 <- floor(term); T_2 <- term - T_1
@@ -676,14 +684,20 @@ dt_public_j <- dt_ofline_j %>%
     dt_irr_sm, join_by(Tdate == date, ftype)
   )
 
+# 10. amount ------------------------------------------------
+dt_famt <- read.xlsx("info.xlsx", sheet = "总市值和流通市值因子") %>%
+  t() %>% as.data.table() %>%
+  `names<-`(unlist(.[1, ])) %>%
+  slice(-1) %>% select(1, 2, 6:9) %>%
+  `names<-`(c("fcode", "fname", "famt_act", "pubfamt_act", "famt", "pubfamt")) %>%
+  mutate(across(-c(fcode, fname), ~ as.numeric(.)))
 
-# 10. I/O ------------------------------------------------
-save(dt_cashflow, dt_sm, dt_str,
-     dt_info, dt_rate, dt_return, dt_refined,
-     dt_fcost, r_gc01,
-     dt_ofline, dt_ofline_i, dt_ofline_j, dt_dxr_D60,
-     dt_sector, dt_irr,
-     dt_public_j,
-     file = "MAIN_V2.RData")
+# 11. I/O ------------------------------------------------
+save(
+  dt_info, dt_rate, dt_refined, dt_return, dt_str, dt_sm, dt_cashflow,
+  dt_fcost, r_gc01,
+  dt_sector, dt_irr, dt_famt,
+  dt_ofline, dt_ofline_i, dt_ofline_j, dt_public_j, dt_dxr_D60,
+  file = "MAIN_V2.RData"
+)
 ## 至此全部数据准备工作结束，将数据保存于MAIN.RData文件中
-

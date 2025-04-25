@@ -1,6 +1,6 @@
 # Backtesting of C-REITs IPO strategy returns
 # Created: 2024/8/21
-# Modified: 2024/11/29
+# Modified: 2025/1/10
 # Author: yifu.shao@CICC
 #
 # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
@@ -43,10 +43,7 @@ font_add(family = "Hei", regular = "STHeiti Light.ttc")
 showtext_auto()
 
 ## 读取proc_1_data.R所清洗的所有数据
-load("MAIN.RData")
-dt_ofline_j %<>%
-  mutate(fclass = vlookup(fcode, unique(dt_sm[, .(fcode, fclass)]))) %>%
-  select(fcode:ftype, fclass, Tdate:dxr_20)
+load("MAIN_V2.RData")
 
 # 1. cx data ------------------------------------------------
 ## 数据准备
@@ -76,7 +73,7 @@ apply(dt_return_D60, MARGIN = 1, function(f.j) {
   )
   
   ## 对 d in 0:59 买入, 可以在后续任意一天卖出。for all d, 可以计算指标:
-  ##    (长度皆为60) 在 d 日买入, 
+  ##    (长度皆为60) 在 d 日买入,
   ##    1. 最短盈利时间: 第一个正收益的日期, (1-60, NA)
   ##    2. 盈利窗口宽度: 有正收益的天数, (1-60, NA)
   ##    3. 平均盈利幅度: 剩余日期内平均盈利情况(等权重)
@@ -111,7 +108,7 @@ apply(dt_return_D60, MARGIN = 1, function(f.j) {
       max_rev_cny = max(vec_pc_rest - p.d.buy),
       avg_rev_rm_cny = mean(c(vec_pc_rest - p.d.buy)[vec_pc_rest - p.d.buy > 0]),
       avg_los_rm_cny = mean(c(vec_pc_rest - p.d.buy)[vec_pc_rest - p.d.buy < 0])
-    ) %>% 
+    ) %>%
       mutate(
         ### 注意0亏损或者0盈利时, *_rm_cny 会有NaN
         across(c(avg_rev_rm_cny, avg_los_rm_cny), ~ ifelse(is.nan(.), 0, .)),
@@ -208,7 +205,6 @@ for (type.i in unique(dt_cxr_rev$ftype)) {
          width = total_w, height = total_h)
 }
 
-
 ## 盈亏图, raw：每一天的盈亏率，按照整体盈亏比倒序排布
 for (type.i in unique(dt_cxr_rev$ftype)) {
   ## 主图
@@ -235,7 +231,6 @@ for (type.i in unique(dt_cxr_rev$ftype)) {
          plot = p_type,
          width = total_w, height = total_h)
 }
-
 
 ## 盈亏图, unified：盈利/(盈利+亏损)，将值标准化到[0,1]区间
 ##                  按照平均标准化盈亏比倒序排布
@@ -264,7 +259,6 @@ for (type.i in unique(dt_cxr_rev$ftype)) {
          plot = p_type,
          width = total_w, height = total_h)
 }
-
 
 ## 盈亏比：每日的盈亏比（弃用），按照平均盈亏比倒序排布
 for (type.i in unique(dt_cxr_rev$ftype)) {
@@ -431,12 +425,11 @@ dt_cxr_rev %>%
       ) +
       guides(fill = "none") +
       theme_bw() +
-      labs(x = NULL, y = "打新收益率%") +
+      labs(x = NULL, y = "次新收益率%") +
       theme(strip.text = element_text(size = 12),
             axis.text.y = element_text(size = 12),
             legend.text = element_text(size = 12))
   } -> fig_overall_cxr
-
 
 # 5. I/O ------------------------------------------------
 ggsave(filename = paste0("output/", "fig_overall_cxr", ".pdf"),
@@ -451,6 +444,3 @@ ggsave(filename = paste0("output/", "p_cx_rle_sum", ".pdf"),
 ggsave(filename = paste0("output/", "p_cx_rle_n", ".pdf"),
        plot = p_cx_rle_n,
        width = 12, height = 8)
-
-
-

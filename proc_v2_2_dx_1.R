@@ -1,6 +1,6 @@
 # Backtesting of C-REITs IPO strategy returns
 # Created: 2024/8/21
-# Modified: 2024/11/29
+# Modified: 2025/1/10
 # Author: yifu.shao@CICC
 #
 # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
@@ -49,6 +49,16 @@ dt_ofline_j %<>%
     dxr_pub = dxr_pub
   )
 
+## brief
+dt_ofline_j %>%
+  `[`(as.Date(Listdate) <= as.Date(Listdate[fname == "华夏首创奥莱REIT"]),
+      .(ofl = mean(dxr_ofl), pub = mean(dxr_pub)))
+
+dt_ofline_j %>%
+  `[`(as.Date(Listdate) <= as.Date(Listdate[fname == "华夏首创奥莱REIT"]) &
+        as.Date(Listdate) >= as.Date("2024-01-01"),
+      .(ofl = mean(dxr_ofl), pub = mean(dxr_pub)))
+
 # 0.5. overall description ------------------------------------------------
 dt_ofline_j %>%
   mutate(
@@ -68,7 +78,7 @@ dt_ofline_j %>%
     dxr.mean = round(mean(dxr), 3),
     win.dxr.mean = round(mean(dxr[dxr > 0], na.rm = T), 3),
     loss.dxr.mean = mean(dxr[dxr < 0], na.rm = T),
-    win.loss.ratio = round(-win.dxr.mean/loss.dxr.mean, 3)
+    win.loss.ratio = round(-win.dxr.mean / loss.dxr.mean, 3)
   ) %>%
   arrange(fcode, variable) %>%
   mutate(
@@ -101,7 +111,6 @@ dt_ofline_j %>%
             axis.text.x = element_text(size = 12, angle = 90, hjust = 1),
             axis.text.y = element_text(size = 12))
   } -> fig_overall_dscrp
-
 
 dt_dxr_D60 %>%
   select(fcode, tt, pc) %>%
@@ -213,9 +222,84 @@ ggplot(data = dt_ofline_type, mapping = aes(x = itype)) +
         legend.title = element_text(size = 14),
         legend.text = element_text(size = 12)) -> fig_idist
 
+dt_lm_str <- dt_ofline_i %>%
+  mutate(plist = vlookup(fcode, dt_ofline_j[, .(fcode, plist)])) %>%
+  mutate(N_i = unicnt(icode), V_i = sum(qty * plist)/10000, .by = c("fcode", "itype")) %>%
+  select(fcode, fname, itype, N_i, V_i) %>% unique() %>%
+  mutate(
+    .by = "fcode",
+    N_i_pct = N_i / sum(N_i),
+    V_i_pct = V_i / sum(V_i),
+  ) %>%
+  filter(itype %in% c("保险机构", "券商自营", "公募基金专户", "券商资管计划", "集合信托计划", "私募基金")) %>%
+  left_join(dt_ofline_j[, .(fcode, fclass, dxr_ofl, dxr_pub)], by = join_by(fcode)) %>%
+  mutate(across(-c(fcode, fname, itype, fclass), ~ normalize(.)))
+
+sapply(unique(dt_lm_str$itype), function(itype_i) {
+  sapply(c("N_i", "N_i_pct", "V_i", "V_i_pct"), function(var_i) {
+    sapply(c("ofl", "pub"), function(dxr_type) {
+      ls_lm_prop <- lm(
+        data = dt_lm_str[itype == itype_i & fclass == "产权类"],
+        formula = as.formula(paste0("dxr_", dxr_type, "~", var_i))
+      ) %>% summary()
+      ls_lm_oprt <- lm(
+        data = dt_lm_str[itype == itype_i & fclass == "经营权类"],
+        formula = as.formula(paste0("dxr_", dxr_type, "~", var_i))
+      ) %>% summary()
+      ls_lm_pool <- lm(
+        data = dt_lm_str[itype == itype_i],
+        formula = as.formula(paste0("dxr_", dxr_type, "~", var_i))
+      ) %>% summary()
+      sapply(list(ls_lm_prop, ls_lm_oprt, ls_lm_pool), function(ls) {
+        data.table(
+          dxr_type = dxr_type, itype = itype_i, predictor = var_i,
+          coef = ls$coefficients[var_i, "Estimate"],
+          pvalue = ls$coefficients[var_i, "Pr(>|t|)"] %>% get_stars,
+          R2 = ls$r.squared
+        ) %>% return()
+      }, simplify = FALSE) %>% rbindlist() %>%
+        cbind(fclass = c("产权类", "经营权类", "全样本")) %>% return()
+    }, simplify = FALSE) %>% rbindlist() %>% return()
+  }, simplify = FALSE) %>% rbindlist() %>% return()
+}, simplify = FALSE) %>% rbindlist() %>% filter(pvalue != " " & R2 >= 0.1) %>%
+  arrange(-coef) %>%
+  mutate(
+    dxr_type = case_match(dxr_type, "ofl" ~ "网下", "pub" ~ "公众"),
+    predictor = case_match(
+      predictor,
+      "N_i" ~ "账户数量", "V_i" ~ "认购金额",
+      "N_i_pct" ~ "账户数量占比", "V_i_pct" ~ "认购金额占比"
+    ),
+    x_lab = paste0(dxr_type, "\n", itype, "\n", predictor, "\nR2 = ", round(R2, 3)),
+    x_lab = factor(x_lab, levels = x_lab),
+    fclass = factor(fclass, levels = c("全样本", "产权类", "经营权类"))
+  ) %>% {
+    ggplot(data = ., mapping = aes(x = x_lab, y = coef)) +
+      geom_bar(aes(fill = predictor), stat = "identity", alpha = 1) +
+      facet_wrap(~ fclass, scales = "free", ncol = 1) +
+      scale_fill_manual(
+        name = "",
+        values = c("认购金额占比" = "#b68e55", "认购金额" = "#b68e55",
+                   "账户数量占比" = "#5b0d07", "账户数量" = "#5b0d07")
+      ) +
+      labs(x = NULL, y = "回归系数 (标准化)") +
+      theme_bw() +
+      theme(
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size = 14),
+        legend.text = element_text(size = 14)
+      ) +
+      geom_text(
+        aes(label = round(coef, 3), vjust = if_else(coef > 0, -.2, 1.2)),
+        size = 4, position = position_dodge(width = 0.9)
+      )
+  } -> fig_lm_str
+
 # 2. descriptive ------------------------------------------------
 ## 2.1. 持有时间 ------------------------------------------------
 dt_dxr_D60 %>%
+  filter(tt != 61) %>%
   select(fcode, fname, tt, starts_with("dxr_")) %>%
   left_join(dt_ofline_j[, .(fcode, restrict)], by = "fcode") %>%
   bind_rows(
@@ -267,75 +351,268 @@ dt_dxr_D60 %>%
       )
   } -> fig_time_d60
 
-## 2.2. 分业态 ------------------------------------------------
-dt_ofline_j %>%
-  select(fname, ftype, dxr = dxr_ofl) %>%
+dt_dxr_D60 %>%
+  arrange(fcode, tt) %>%
   mutate(
-    ftype = recode(ftype,
-                   "商业" = "消费", "物流园" = "仓储物流",
-                   "保障性租赁住房" = "保租房"),
-    ftype = factor(
-      ftype,
-      levels = rev(c("生态环保", "能源", "高速公路",
-                     "消费", "产业园", "仓储物流", "保租房"))
-    )
+    .by = c("fcode"),
+    dxr_fc_dt0 = dxr_fc - first(dxr_fc),
+    turn_positive = 1 * (dxr_fc > 0),
+    turn_positive = turn_positive * ifelse(first(dxr_fc) > 0, NA, 1)
   ) %>%
   mutate(
-    .by = c("ftype"),
-    mean_dxr = mean(dxr, na.rm = T),
-    wins.rate = round(sum(dxr > 0, na.rm = T) / sum(!is.na(dxr)) * 100, 2),
-    win.dxr.mean = mean(dxr[dxr > 0], na.rm = T),
-    loss.dxr.mean = mean(dxr[dxr < 0], na.rm = T),
-    unf_rl = win.dxr.mean /
-      (win.dxr.mean - ifelse(is.nan(loss.dxr.mean), 0, loss.dxr.mean))
+    .by = c("tt"),
+    win_vs_t0 = sum(dxr_fc_dt0 > 0) / n() * 100,
+    win_buffer = mean(dxr_fc_dt0[dxr_fc_dt0 > 0]),
+    turn_vs_t0 = sum(turn_positive > 0, na.rm = TRUE) / dt_dxr_D60[tt == 0, sum(dxr_fc < 0)] * 100
   ) %>%
-  select(ftype, mean_dxr, wins.rate, win.dxr.mean, unf_rl) %>%
-  unique() %>%
+  filter(tt != 0) %>%
+  select(
+    fname, tt, win_vs_t0, win_buffer, turn_vs_t0
+  ) %>%
+  mutate(
+    tt = ifelse(tt == 61, 75, tt)
+  ) %>%
   pivot_longer(
-    cols = c(mean_dxr, wins.rate, win.dxr.mean, unf_rl),
-    names_to = "variables",
-    values_to = "values"
+    cols = -c(fname, tt), names_to = "variable", values_to = "value"
   ) %>%
   mutate(
-    sign.fill = case_when(
-      variables == "mean_dxr" & values > 0 ~ "H",
-      variables == "wins.rate" & values > 50 ~ "H",
-      variables == "win.dxr.mean" & values > 0 ~ "H",
-      variables == "unf_rl" & values > 0.5 ~ "H",
-      .default = "L"
-    ),
-    intercept = case_when(
-      variables == "mean_dxr" ~ 0,
-      variables == "wins.rate" ~ 50,
-      variables == "unf_rl" ~ 0.5,
-      .default = NA
-    ),
-    variables = factor(
-      variables,
-      levels = c("wins.rate", "mean_dxr", "win.dxr.mean", "unf_rl"),
-      labels = c("业态整体胜率%", "业态平均打新收益率%",
-                 "胜者组平均打新收益率%",
-                 "业态整体标准化盈亏比:\n平均盈利/(平均盈利 + 平均亏损)")
+    v_tab = factor(
+      variable,
+      levels = c("win_vs_t0", "win_buffer", "turn_vs_t0"),
+      labels = c("收益率超过首日概率%", "收益率增厚%", "负收益率转正概率%")
     )
   ) %>% {
-    ggplot(data = ., mapping = aes(x = ftype)) +
-      facet_wrap(~ variables, ncol = 4, scales = "free_y") +
-      geom_bar(
-        mapping = aes(y = values, fill = sign.fill),
-        stat = "identity", position = "dodge"
+    ggplot(data = ., mapping = aes(x = tt, y = value)) +
+      facet_wrap(~ v_tab, ncol = 1, scales = "free_y") +
+      geom_line(
+        data = filter(., tt != 75),
+        mapping = aes(color = variable), alpha = 1
       ) +
-      geom_hline(
-        mapping = aes(yintercept = intercept),
-        linetype = "dashed"
+      geom_line(
+        data = filter(., tt %in% c(60, 75)),
+        linetype = "dashed",
+        mapping = aes(color = variable), alpha = 1
       ) +
-      scale_fill_manual(values = c("L" = "#b68e55", "H" = "#5b0d07")) +
-      guides(fill = "none") +
-      labs(x = NULL, y = NULL) +
+      geom_point(
+        data = filter(., tt %in% c(75)),
+        shape = 1, size = 1.5,
+        mapping = aes(color = variable), alpha = 1
+      ) +
+      labs(x = "上市后天数", y = NULL) +
+      scale_color_manual(
+        values = c("win_vs_t0" = "#5b0d07", "win_buffer" = "#b68e55", "turn_vs_t0" = "#5b0d07")
+      ) +
+      scale_x_continuous(
+        breaks = c(1, 15, 30, 45, 60, 75),
+        labels = c(1, 15, 30, 45, 60, "2024-11-29")
+      ) +
+      guides(color = "none") +
       theme_bw() +
-      theme(strip.text = element_text(size = 12),
-            axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
-            axis.text.y = element_text(size = 12))
-  } -> fig_industry_v2
+      theme(
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12)
+      )
+  } -> fig_time_d60_vst0
+
+## 2.2. 分时间, 滚动均值 ------------------------------------------------
+dt_ofline_j %>%
+  arrange(Listdate, Xdate, fcode) %>%
+  select(fcode, fname, Listdate, dxr_ofl, dxr_pub) %>%
+  mutate(
+    n_fund = row_number(),
+    rollmean_ofl_15 = zoo::rollapply(dxr_ofl, width = 15, align = "right", FUN = mean, fill = NA),
+    rollmean_pub_15 = zoo::rollapply(dxr_pub, width = 15, align = "right", FUN = mean, fill = NA),
+
+    rollmean_ofl_20 = zoo::rollapply(dxr_ofl, width = 20, align = "right", FUN = mean, fill = NA),
+    rollmean_pub_20 = zoo::rollapply(dxr_pub, width = 20, align = "right", FUN = mean, fill = NA),
+
+    rollmean_ofl_25 = zoo::rollapply(dxr_ofl, width = 25, align = "right", FUN = mean, fill = NA),
+    rollmean_pub_25 = zoo::rollapply(dxr_pub, width = 25, align = "right", FUN = mean, fill = NA),
+  ) %>%
+  pivot_longer(
+    cols = starts_with("rollmean"), values_to = "rollmean", names_to = "variable"
+  ) %>%
+  filter(!is.na(rollmean)) %>%
+  mutate(
+    window_flag = str_sub(variable, -2, -1),
+    window_flag = paste0("窗口宽度 = ", window_flag),
+    type_flag = as.character(str_detect(variable, "ofl") * 1)
+  ) %>% {
+    ggplot(data = ., mapping = aes(x = n_fund, y = rollmean)) +
+      geom_line(mapping = aes(group = variable, color = type_flag, linetype = type_flag)) +
+      facet_wrap(~ window_flag, scales = "free_x") +
+      scale_color_manual(
+        name = NULL,
+        values = c("1" = "#b68e55", "0" = "#5b0d07"), labels = c("1" = "网下投资者", "0" = "公众投资者")
+      ) +
+      scale_linetype_manual(
+        name = NULL,
+        values = c("1" = "solid", "0" = "dashed"), labels = c("1" = "网下投资者", "0" = "公众投资者")
+      ) +
+      labs(x = "REITs累计上市个数", y = "滚动平均打新收益率 %") +
+      theme_bw() +
+      theme(
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12)
+      )
+  } -> fig_dxr_rollmean
+
+dt_ofline_j %>%
+  arrange(Listdate, Xdate, fcode) %>%
+  select(fcode, fname, Listdate, dxr_ofl, dxr_pub, dxr_ofl_norst) %>%
+  mutate(
+    n_fund = row_number(),
+    rollmean_ofl = zoo::rollapply(dxr_ofl, width = 20, align = "right", FUN = mean, fill = NA),
+    rollmean_pub = zoo::rollapply(dxr_pub, width = 20, align = "right", FUN = mean, fill = NA),
+    rollmean_ofl_norst = zoo::rollapply(dxr_ofl_norst, width = 20, align = "right", FUN = mean, fill = NA),
+  ) %>%
+  pivot_longer(
+    cols = starts_with("rollmean"), values_to = "rollmean", names_to = "variable"
+  ) %>%
+  filter(!is.na(rollmean)) %>% {
+    ggplot(data = ., mapping = aes(x = n_fund, y = rollmean)) +
+      geom_line(mapping = aes(group = variable, color = variable, linetype = variable)) +
+      scale_color_manual(
+        name = NULL,
+        values = c("rollmean_ofl" = "#5b0d07", "rollmean_ofl_norst" = "#5b0d07",
+                   "rollmean_pub" = "#b68e55"),
+        labels = c("rollmean_ofl" = "网下打新收益率 - 实际", "rollmean_ofl_norst" = "网下打新收益率 - 无限售",
+                   "rollmean_pub" = "公众打新收益率 - 实际")
+      ) +
+      scale_linetype_manual(
+        name = NULL,
+        values = c("rollmean_ofl" = 1, "rollmean_ofl_norst" = 2,
+                   "rollmean_pub" = 1),
+        labels = c("rollmean_ofl" = "网下打新收益率 - 实际", "rollmean_ofl_norst" = "网下打新收益率 - 无限售",
+                   "rollmean_pub" = "公众打新收益率 - 实际")
+      ) +
+      labs(x = "REITs累计上市个数", y = "滚动平均打新收益率 %") +
+      theme_bw() +
+      theme(
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        legend.position = "inside",
+        legend.position.inside = c(.21, .17),
+        legend.background = element_rect(
+          fill = "white", color = "gray", linewidth = 0.5, linetype = "solid"
+        )
+      )
+  } -> fig_dxr_rollmean_v2
+
+## 2.3. 分业态 ------------------------------------------------
+dt_industry <- dt_ofline_j %>%
+  mutate(
+    dpc_1 = vlookup(fcode, dt_dxr_D60[tt == 0, .(fcode, pc)]),
+    dpc_4 = vlookup(fcode, dt_dxr_D60[tt == 3, .(fcode, pc)]),
+    across(starts_with("dpc_"), ~ (. / plist - 1) * 100)
+  )
+
+vec_y_lab <- c(
+  "dxr_ofl" = "网下投资者打新收益率%",
+  "dxr_pub" = "公众投资者打新收益率%",
+  "dpc_1" = "上市首日价格涨幅%",
+  "dpc_4" = "上市第4个交易日价格涨幅%"
+)
+
+ls_strip_title <- list(
+  c("业态整体胜率%", "业态平均打新收益率%",
+    "胜者组平均打新收益率%",
+    "业态整体标准化盈亏比:\n平均盈利/(平均盈利 + 平均亏损)"),
+  c("业态整体胜率%", "业态平均涨幅%",
+    "胜者组平均涨幅%",
+    "业态整体标准化盈亏比:\n平均涨幅/(平均涨幅 + 平均跌幅)")
+) %>% rep(each = 2) %>%
+  `names<-`(c("dxr_ofl", "dxr_pub", "dpc_1", "dpc_4"))
+
+ls_fig_industry <- lapply(
+  c("dxr_ofl", "dxr_pub", "dpc_1", "dpc_4"),
+  function(var_y) {
+    dt_industry %>%
+      select(fname, ftype, dxr = all_of(var_y)) %>%
+      mutate(
+        ftype = recode(ftype,
+                       "商业" = "消费", "物流园" = "仓储物流",
+                       "保障性租赁住房" = "保租房"),
+        ftype = factor(
+          ftype,
+          levels = rev(c("生态环保", "能源", "高速公路",
+                         "消费", "产业园", "仓储物流", "保租房"))
+        )
+      ) %>%
+      mutate(
+        .by = c("ftype"),
+        mean_dxr = mean(dxr, na.rm = T),
+        wins.rate = round(sum(dxr > 0, na.rm = T) / sum(!is.na(dxr)) * 100, 2),
+        win.dxr.mean = mean(dxr[dxr > 0], na.rm = T),
+        loss.dxr.mean = mean(dxr[dxr < 0], na.rm = T),
+        unf_rl = win.dxr.mean /
+          (win.dxr.mean - ifelse(is.nan(loss.dxr.mean), 0, loss.dxr.mean))
+      ) %>%
+      select(ftype, mean_dxr, wins.rate, win.dxr.mean, unf_rl) %>%
+      unique() %>%
+      pivot_longer(
+        cols = c(mean_dxr, wins.rate, win.dxr.mean, unf_rl),
+        names_to = "variables",
+        values_to = "values"
+      ) %>%
+      mutate(
+        sign.fill = case_when(
+          variables == "mean_dxr" & values > 0 ~ "H",
+          variables == "wins.rate" & values > 50 ~ "H",
+          variables == "win.dxr.mean" & values > 0 ~ "H",
+          variables == "unf_rl" & values > 0.5 ~ "H",
+          .default = "L"
+        ),
+        intercept = case_when(
+          variables == "mean_dxr" ~ 0,
+          variables == "wins.rate" ~ 50,
+          variables == "unf_rl" ~ 0.5,
+          .default = NA
+        ),
+        variables = factor(
+          variables,
+          levels = c("wins.rate", "mean_dxr", "win.dxr.mean", "unf_rl"),
+          labels = ls_strip_title[[var_y]]
+        )
+      ) %>% {
+        ggplot(data = ., mapping = aes(x = ftype)) +
+          facet_wrap(~ variables, ncol = 4, scales = "free_y") +
+          geom_bar(
+            mapping = aes(y = values, fill = sign.fill),
+            stat = "identity", position = "dodge"
+          ) +
+          geom_hline(
+            mapping = aes(yintercept = intercept),
+            linetype = "dashed"
+          ) +
+          scale_fill_manual(values = c("L" = "#b68e55", "H" = "#5b0d07")) +
+          guides(fill = "none") +
+          labs(x = NULL, y = vec_y_lab[var_y]) +
+          theme_bw() +
+          theme(strip.text = element_text(size = 12),
+                axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+                axis.text.y = element_text(size = 12),
+                axis.title.y = element_text(size = 14),
+                plot.margin = margin(t = 5, r = 5, b = 21, l = 5))
+      } -> fig_industry_i
+    return(fig_industry_i)
+  }
+)
+
+fig_industry_v2 <- plot_grid(
+  ls_fig_industry[[1]], ls_fig_industry[[2]],
+  ls_fig_industry[[3]], ls_fig_industry[[4]],
+  ncol = 1, align = "v", axis = "t"
+)
 
 # 3. factor corr plot ------------------------------------------------
 ## 3.1. 参与热情 ------------------------------------------------
@@ -395,7 +672,7 @@ dt_participation <- dt_ofline_j %>%
 ggplot(data = filter(dt_participation,
                      str_detect(variable, "^(流通盘占比|战配占比).*")),
        mapping = aes(x = value)) +
-  facet_wrap( ~ variable, scales = "free_x") +
+  facet_wrap(~ variable, scales = "free_x") +
   geom_point(mapping = aes(y = ofl_qty/1e4), shape = 1) +
   geom_smooth(mapping = aes(y = ofl_qty/1e4), se = T, linewidth = .5,
               method = "loess", alpha = 0.2) +
@@ -410,7 +687,7 @@ ggplot(data = filter(dt_participation,
 ggplot(data = filter(dt_participation,
                      str_detect(variable, "^(流通盘占比|战配占比).*", negate = T)),
        mapping = aes(x = value)) +
-  facet_wrap( ~ variable, scales = "free_x") +
+  facet_wrap(~ variable, scales = "free_x") +
   geom_point(mapping = aes(y = ofl_qty/1e4), shape = 1) +
   geom_smooth(mapping = aes(y = ofl_qty/1e4), se = T, linewidth = .5,
               method = "loess", alpha = 0.2) +
@@ -433,7 +710,7 @@ dt_ofline_j %>%
     by = "fcode"
   ) %>%
   mutate(mkt_pct = 100 - cy_pct - og_pct) %>%
-  pivot_longer(cols = -c("fcode", "fclass", "dxr"), 
+  pivot_longer(cols = -c("fcode", "fclass", "dxr"),
                names_to = c("variable"),
                values_to = c("value")) %>%
   filter(!(is.na(dxr) | is.na(value))) %>%
@@ -495,7 +772,6 @@ dt_ofline_j %>%
       )
   } -> fig_ofl_str
 
-
 dt_ofline_j %>%
   filter(fname != "华安百联消费REIT") %>%
   select(fcode, fclass, dxr = dxr_pub,
@@ -506,7 +782,7 @@ dt_ofline_j %>%
     by = "fcode"
   ) %>%
   mutate(mkt_pct = 100 - cy_pct - og_pct) %>%
-  pivot_longer(cols = -c("fcode", "fclass", "dxr"), 
+  pivot_longer(cols = -c("fcode", "fclass", "dxr"),
                names_to = c("variable"),
                values_to = c("value")) %>%
   filter(!(is.na(dxr) | is.na(value))) %>%
@@ -568,7 +844,6 @@ dt_ofline_j %>%
       )
   } -> fig_pub_str
 
-
 ## 3.3. 网下指标 ------------------------------------------------
 ## 绘图：打新收益率与网下指标（网下倍数等）
 dt_ofline_j %>%
@@ -577,7 +852,7 @@ dt_ofline_j %>%
   mutate(p_med = (p_up + p_low) / 2,
          ofrate = 100 * as.numeric(ofrate)) %>%
   mutate(across(c(p_up, p_med, p_low), ~ . / famt_persh)) %>%
-  pivot_longer(cols = -c("fcode", "fclass", "dxr"), 
+  pivot_longer(cols = -c("fcode", "fclass", "dxr"),
                names_to = c("variable"),
                values_to = c("value")) %>%
   filter(!(is.na(dxr) | is.na(value))) %>%
@@ -638,7 +913,6 @@ dt_ofline_j %>%
       )
   } -> fig_ofl_offline
 
-
 dt_ofline_j %>%
   filter(fname != "华安百联消费REIT") %>%
   select(fcode, fclass, dxr = dxr_pub,
@@ -646,7 +920,7 @@ dt_ofline_j %>%
   mutate(p_med = (p_up + p_low) / 2,
          ofrate = 100 * as.numeric(ofrate)) %>%
   mutate(across(c(p_up, p_med, p_low), ~ . / famt_persh)) %>%
-  pivot_longer(cols = -c("fcode", "fclass", "dxr"), 
+  pivot_longer(cols = -c("fcode", "fclass", "dxr"),
                names_to = c("variable"),
                values_to = c("value")) %>%
   filter(!(is.na(dxr) | is.na(value))) %>%
@@ -707,7 +981,6 @@ dt_ofline_j %>%
       )
   } -> fig_pub_offline
 
-
 ## 3.4. 询价指标 ------------------------------------------------
 ## 绘图：打新收益率与询价指标（询价区间等）
 dt_ofline_j %>%
@@ -716,20 +989,20 @@ dt_ofline_j %>%
   mutate(p_list_quantile = 100 * (plist - p_low) / (p_up - p_low),
          p_med = (p_up + p_low) / 2) %>%
   mutate(across(c(p_up, p_med, p_low), ~ . / famt_persh)) %>%
-  pivot_longer(cols = -c("fcode", "fclass", "dxr"), 
+  pivot_longer(cols = -c("fcode", "fclass", "dxr"),
                names_to = c("variable"),
                values_to = c("value")) %>%
   filter(!(is.na(dxr) | is.na(value))) %>%
   filter(variable %in% c("p_up", "p_med", "p_low", "p_list_quantile")) %>%
   filter(!(variable == "p_up" & value < 1)) %>%
-  filter(!(variable == "p_low" & value < 0.9)) %>% 
+  filter(!(variable == "p_low" & value < 0.9)) %>%
   filter(!(variable == "p_med" & value < 0.92)) %>%
   filter(variable != "p_list_quantile") %>%
   mutate(
     variable = recode(variable,
                       # "p_list_quantile" = "发行价占询价区间分位数%",
                       "p_up" = "询价区间上限 / 拟募集金额 per share",
-                      "p_med" = "询价中位数 / 拟募集金额 per share",
+                      "p_med" = "询价区间中位数 / 拟募集金额 per share",
                       "p_low" = "询价区间下限 / 拟募集金额 per share")
   ) %>%
   bind_rows(
@@ -748,7 +1021,7 @@ dt_ofline_j %>%
     variable,
     levels = c(
       "询价区间上限 / 拟募集金额 per share",
-      "询价中位数 / 拟募集金额 per share",
+      "询价区间中位数 / 拟募集金额 per share",
       "询价区间下限 / 拟募集金额 per share"
       #"发行价占询价区间分位数%"
     ),
@@ -776,7 +1049,6 @@ dt_ofline_j %>%
       )
   } -> fig_ofl_query
 
-
 dt_ofline_j %>%
   filter(fname != "华安百联消费REIT") %>%
   select(fcode, fclass, dxr = dxr_pub,
@@ -784,19 +1056,19 @@ dt_ofline_j %>%
   mutate(p_list_quantile = 100 * (plist - p_low) / (p_up - p_low),
          p_med = (p_up + p_low) / 2) %>%
   mutate(across(c(p_up, p_med, p_low), ~ . / famt_persh)) %>%
-  pivot_longer(cols = -c("fcode", "fclass", "dxr"), 
+  pivot_longer(cols = -c("fcode", "fclass", "dxr"),
                names_to = c("variable"),
                values_to = c("value")) %>%
   filter(!(is.na(dxr) | is.na(value))) %>%
   filter(variable %in% c("p_up", "p_med", "p_low", "p_list_quantile")) %>%
   filter(!(variable == "p_up" & value < 1)) %>%
-  filter(!(variable == "p_low" & value < 0.9)) %>% 
+  filter(!(variable == "p_low" & value < 0.9)) %>%
   filter(!(variable == "p_med" & value < 0.92)) %>%
   mutate(
     variable = recode(variable,
                       "p_list_quantile" = "发行价占询价区间分位数%",
                       "p_up" = "询价区间上限 / 拟募集金额 per share",
-                      "p_med" = "询价中位数 / 拟募集金额 per share",
+                      "p_med" = "询价区间中位数 / 拟募集金额 per share",
                       "p_low" = "询价区间下限 / 拟募集金额 per share")
   ) %>%
   bind_rows(
@@ -815,7 +1087,7 @@ dt_ofline_j %>%
     variable,
     levels = c(
       "询价区间上限 / 拟募集金额 per share",
-      "询价中位数 / 拟募集金额 per share",
+      "询价区间中位数 / 拟募集金额 per share",
       "询价区间下限 / 拟募集金额 per share",
       "发行价占询价区间分位数%"
     ),
@@ -854,7 +1126,7 @@ dt_ofline_j %>%
          dif_term = term - avg_term,
          dif_irr  = irr - avg_irr_sm) %>%
   select(fcode, fclass, dxr, starts_with("dif_")) %>%
-  pivot_longer(cols = -c("fcode", "fclass", "dxr"), 
+  pivot_longer(cols = -c("fcode", "fclass", "dxr"),
                names_to = c("variable"),
                values_to = c("value")) %>%
   filter(!(is.na(dxr) | is.na(value))) %>%
@@ -916,7 +1188,7 @@ dt_ofline_j %>%
          dif_term = term - avg_term,
          dif_irr  = irr - avg_irr_sm) %>%
   select(fcode, fclass, dxr, starts_with("dif_")) %>%
-  pivot_longer(cols = -c("fcode", "fclass", "dxr"), 
+  pivot_longer(cols = -c("fcode", "fclass", "dxr"),
                names_to = c("variable"),
                values_to = c("value")) %>%
   filter(!(is.na(dxr) | is.na(value))) %>%
@@ -983,7 +1255,7 @@ dt_ofline_j %>%
     by = join_by(Xdate == date, ftype == ftype)
   ) %>%
   select(-ends_with("date")) %>%
-  pivot_longer(cols = -c(fcode, fclass, ftype, dxr), 
+  pivot_longer(cols = -c(fcode, fclass, ftype, dxr),
                names_to = c("variable"),
                values_to = c("value")) %>%
   filter(!(is.na(dxr) | is.na(value))) %>%
@@ -1036,7 +1308,6 @@ dt_ofline_j %>%
       )
   } -> fig_ofl_sector
 
-
 dt_ofline_j %>%
   filter(fname != "华安百联消费REIT") %>%
   select(fcode, fclass, ftype, dxr = dxr_pub, Tdate) %>%
@@ -1052,7 +1323,7 @@ dt_ofline_j %>%
     by = join_by(Tdate == date, ftype == ftype)
   ) %>%
   select(-ends_with("date")) %>%
-  pivot_longer(cols = -c(fcode, fclass, ftype, dxr), 
+  pivot_longer(cols = -c(fcode, fclass, ftype, dxr),
                names_to = c("variable"),
                values_to = c("value")) %>%
   filter(!(is.na(dxr) | is.na(value))) %>%
@@ -1105,6 +1376,106 @@ dt_ofline_j %>%
       )
   } -> fig_pub_sector
 
+## 3.7. 规模指标 ------------------------------------------------
+dt_ofline_j %>%
+  select(fcode, fclass, dxr = dxr_ofl) %>%
+  left_join(
+    dt_famt, by = join_by(fcode)
+  ) %>%
+  pivot_longer(cols = c(famt, pubfamt),
+               names_to = c("variable"),
+               values_to = c("value")) %>%
+  filter(!(is.na(dxr) | is.na(value))) %>%
+  mutate(
+    variable = recode(variable, "famt" = "拟募集资金 (亿元)", "pubfamt" = "拟流通盘规模 (亿元)")
+  ) %>%
+  bind_rows(
+    mutate(., fclass = "全样本")
+  ) %>%
+  mutate(corr = round(cor(value, dxr), 3), .by = c("variable", "fclass")) %>%
+  mutate(
+    corr2 = paste0(
+      "全样本", "Corr = ", first(corr[fclass == "全样本"]), ", ",
+      "\n产权类", "Corr = ", first(corr[fclass == "产权类"]), ", ",
+      "经营权类", "Corr = ", first(corr[fclass == "经营权类"])
+    ),
+    .by = variable
+  ) %>%
+  mutate(variable = factor_with_valuelabel(
+    variable,
+    levels = c("拟募集资金 (亿元)", "拟流通盘规模 (亿元)"),
+    value = corr2
+  )) %>% {
+    ggplot(data = ., mapping = aes(x = value, y = dxr, group = fclass, color = fclass)) +
+      facet_wrap(~ variable, scales = "free_x", ncol = 2) +
+      geom_point(alpha = 0.7, size = 0.7, shape = 1) +
+      geom_smooth(se = F, linewidth = 0.7, method = "loess") +
+      geom_line(linetype = "dashed", linewidth = .7, alpha = 0.1) +
+      scale_color_manual(name = NULL,
+                         values = c("经营权类" = "#b68e55",
+                                    "产权类" = "#5b0d07",
+                                    "全样本" = "skyblue")) +
+      labs(x = "REITs 特征", y = "(网下投资者) 打新收益率 %") +
+      guides(fill = "none") +
+      theme_minimal() +
+      theme(
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12)
+      )
+  } -> fig_ofl_amt
+
+dt_ofline_j %>%
+  select(fcode, fclass, dxr = dxr_pub) %>%
+  left_join(
+    dt_famt, by = join_by(fcode)
+  ) %>%
+  pivot_longer(cols = c(famt_act, pubfamt_act),
+               names_to = c("variable"),
+               values_to = c("value")) %>%
+  filter(!(is.na(dxr) | is.na(value))) %>%
+  mutate(
+    variable = recode(variable, "famt_act" = "实际募集资金 (亿元)", "pubfamt_act" = "实际流通盘规模 (亿元)")
+  ) %>%
+  bind_rows(
+    mutate(., fclass = "全样本")
+  ) %>%
+  mutate(corr = round(cor(value, dxr), 3), .by = c("variable", "fclass")) %>%
+  mutate(
+    corr2 = paste0(
+      "全样本", "Corr = ", first(corr[fclass == "全样本"]), ", ",
+      "\n产权类", "Corr = ", first(corr[fclass == "产权类"]), ", ",
+      "经营权类", "Corr = ", first(corr[fclass == "经营权类"])
+    ),
+    .by = variable
+  ) %>%
+  mutate(variable = factor_with_valuelabel(
+    variable,
+    levels = c("实际募集资金 (亿元)", "实际流通盘规模 (亿元)"),
+    value = corr2
+  )) %>% {
+    ggplot(data = ., mapping = aes(x = value, y = dxr, group = fclass, color = fclass)) +
+      facet_wrap(~ variable, scales = "free_x", ncol = 2) +
+      geom_point(alpha = 0.7, size = 0.7, shape = 1) +
+      geom_smooth(se = F, linewidth = 0.7, method = "loess") +
+      geom_line(linetype = "dashed", linewidth = .7, alpha = 0.1) +
+      scale_color_manual(name = NULL,
+                         values = c("经营权类" = "#b68e55",
+                                    "产权类" = "#5b0d07",
+                                    "全样本" = "skyblue")) +
+      labs(x = "REITs 特征", y = "(公众投资者) 打新收益率 %") +
+      guides(fill = "none") +
+      theme_minimal() +
+      theme(
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12)
+      )
+  } -> fig_pub_amt
 
 # 4. factor reg ------------------------------------------------
 ## 4.1. one-factor ------------------------------------------------
@@ -1122,6 +1493,9 @@ dt_lm_ofl <- dt_ofline_j %>%
     ),
     by = join_by(Xdate == date, ftype == ftype)
   ) %>%
+  left_join(
+    select(dt_famt, fcode, pubfamt), by = "fcode"
+  ) %>%
   mutate(
     dif_divd = dividend - avg_smdivd,
     dif_term = term - avg_term,
@@ -1137,11 +1511,10 @@ dt_lm_ofl <- dt_ofline_j %>%
     fcode, fclass, dxr,
     secind_60d, index_60d,
     p_up, p_med, public_pct,
-    dif_divd, dif_term, dif_irr, og_pct
+    dif_divd, dif_term, dif_irr, og_pct,
+    famt, pubfamt
     #, ofl_multi, p_list_quantile
-  ) %>%
-  mutate(across(-c(fcode, fclass), ~ normalize(.)))
-
+  ) %>% mutate(across(-c(fcode, fclass), ~ normalize(.)))
 
 dt_lm_pub <- dt_ofline_j %>%
   filter(fname != "华安百联消费REIT") %>%
@@ -1149,12 +1522,15 @@ dt_lm_pub <- dt_ofline_j %>%
          plist, term, avg_term,
          famt, public_amt, p_up, p_low, ofl_multi, ofl_num) %>%
   left_join(
-    select(dt_public_j, fcode, dividend, avg_smdivd, irr, avg_irr_sm), 
+    select(dt_public_j, fcode, dividend, avg_smdivd, irr, avg_irr_sm),
     by = "fcode"
   ) %>%
   left_join(
     select(dt_sector, date, ftype, secind_60d, index_60d),
     by = join_by(Tdate == date, ftype == ftype)
+  ) %>%
+  left_join(
+    select(dt_famt, fcode, famt_act, pubfamt_act), by = "fcode"
   ) %>%
   mutate(
     dif_divd = dividend - avg_smdivd,
@@ -1171,9 +1547,9 @@ dt_lm_pub <- dt_ofline_j %>%
     fcode, fclass, dxr,
     secind_60d, index_60d,
     p_list_quantile, public_pct, ofl_multi,
-    dif_divd, dif_term, dif_irr, og_pct, mkt_pct, ofl_num
-  ) %>%
-  mutate(across(-c(fcode, fclass), ~ normalize(.)))
+    dif_divd, dif_term, dif_irr, og_pct, mkt_pct, ofl_num,
+    famt_act, pubfamt_act
+  ) %>% mutate(across(-c(fcode, fclass), ~ normalize(.)))
 
 vec_predictors_chn <- c(
   "dif_divd" = "预测分派率%-\n板块二级市场均值",
@@ -1199,13 +1575,17 @@ vec_predictors_chn <- c(
   "ofrate" = "网下确认比例%",
   "pbrate" = "公众确认比例%",
   "dpc_1" = "上市首日收盘价涨跌幅%",
-  "dpc_4" = "上市第4收盘价涨跌幅%"
+  "dpc_4" = "上市第4收盘价涨跌幅%",
+  "famt" = "拟募集资金 (亿元)",
+  "pubfamt" = "拟流通盘规模 (亿元)",
+  "famt_act" = "实际募集资金 (亿元)",
+  "pubfamt_act" = "实际流通盘规模 (亿元)"
 )
 
 ### 4.1.1. one-factor, linear ------------------------------------------------
 ### 仅一次项的回归
-
 ### 网下投资收益率
+
 vec_predictors_chn %<>%
   str_replace_all("T日", "询价日") %>%
   `names<-`(names(vec_predictors_chn))
@@ -1232,7 +1612,7 @@ dt_lm_linear_ofl <- lapply(
   }
 ) %>% rbindlist() %>%
   filter(!(predictor %in% c("p_low"))) %>%
-  pivot_longer(cols = c(coef), 
+  pivot_longer(cols = c(coef),
                names_to = "variable",
                values_to = "value") %>%
   mutate(stars = ifelse(variable == "coef",
@@ -1244,7 +1624,6 @@ dt_lm_linear_ofl <- lapply(
   arrange(-R2) %>%
   mutate(predictor = factor(predictor, levels = unique(predictor))) %>%
   mutate(value = ifelse(stars == " ", 0, value))
-
 
 ls_fig_lm_linear_ofl <- lapply(c("产权类", "经营权类", "全样本"), function(ft) {
   ggplot(filter(dt_lm_linear_ofl, fclass == ft),
@@ -1268,7 +1647,7 @@ ls_fig_lm_linear_ofl <- lapply(c("产权类", "经营权类", "全样本"), func
       strip.text = element_text(size = 14),
       plot.margin = margin(10, 5, 5, 5)
     ) +
-    geom_text(aes(label = round(value, 2),
+    geom_text(aes(label = round(value, 3),
                   vjust = if_else(value > 0, -.2, 1.2)),
               size = 3,
               position = position_dodge(width = 0.9)) %>% return()
@@ -1311,7 +1690,7 @@ dt_lm_linear_pub <- lapply(
   }
 ) %>% rbindlist() %>%
   filter(!(predictor %in% c("p_low"))) %>%
-  pivot_longer(cols = c(coef), 
+  pivot_longer(cols = c(coef),
                names_to = "variable",
                values_to = "value") %>%
   mutate(stars = ifelse(variable == "coef",
@@ -1346,7 +1725,7 @@ ls_fig_lm_linear_pub <- lapply(c("产权类", "经营权类", "全样本"), func
       strip.text = element_text(size = 14),
       plot.margin = margin(10, 5, 5, 5)
     ) +
-    geom_text(aes(label = round(value, 2),
+    geom_text(aes(label = round(value, 3),
                   vjust = if_else(value > 0, -.2, 1.2)),
               size = 3,
               position = position_dodge(width = 0.9)) %>% return()
@@ -1362,10 +1741,8 @@ comb_fig_lm_linear_pub <- ggdraw() +
   draw_label(expression("公众投资者 (标准化后) 因子, 单变量" ~ R^2),
              size = 14, x = 0.5, y = 0.02)
 
-
 ### 4.1.2. one-factor, quadratic ------------------------------------------------
 ### 包含二次项的回归
-
 ### 网下投资者
 vec_predictors_chn %<>%
   str_replace_all("T日", "询价日") %>%
@@ -1396,7 +1773,7 @@ dt_lm_quadratic_ofl <- lapply(
   }
 ) %>% rbindlist() %>%
   filter(!(predictor %in% c("p_low"))) %>%
-  pivot_longer(cols = c(coef, coef_2), 
+  pivot_longer(cols = c(coef, coef_2),
                names_to = "variable",
                values_to = "value") %>%
   mutate(stars = ifelse(variable == "coef",
@@ -1430,7 +1807,7 @@ ls_fig_lm_quadratic_ofl <- lapply(c("产权类", "经营权类", "全样本"), f
       axis.text.x = element_text(angle = 45, hjust = 1),
       plot.margin = margin(10, 5, 5, 5)
     ) +
-    geom_text(aes(label = round(value, 2),
+    geom_text(aes(label = round(value, 3),
                   vjust = if_else(value > 0, -.2, 1.2)),
               size = 3,
               position = position_dodge(width = 0.9)) %>% return()
@@ -1476,7 +1853,7 @@ dt_lm_quadratic_pub <- lapply(
   }
 ) %>% rbindlist() %>%
   filter(!(predictor %in% c("p_low"))) %>%
-  pivot_longer(cols = c(coef, coef_2), 
+  pivot_longer(cols = c(coef, coef_2),
                names_to = "variable",
                values_to = "value") %>%
   mutate(stars = ifelse(variable == "coef",
@@ -1510,7 +1887,7 @@ ls_fig_lm_quadratic_pub <- lapply(c("产权类", "经营权类", "全样本"), f
       axis.text.x = element_text(angle = 45, hjust = 1),
       plot.margin = margin(10, 5, 5, 5)
     ) +
-    geom_text(aes(label = round(value, 2),
+    geom_text(aes(label = round(value, 3),
                   vjust = if_else(value > 0, -.2, 1.2)),
               size = 3,
               position = position_dodge(width = 0.9)) %>% return()
@@ -1527,7 +1904,7 @@ comb_fig_lm_quadratic_pub <- ggdraw() +
              size = 14, x = 0.5, y = 0.02)
 
 ## 4.2. term and divd ------------------------------------------------
-### 回归1：分派率和年限做因子
+## 回归1：分派率和年限做因子
 dt_ofline_lm_sm <- dt_ofline_j %>%
   select(fcode, fclass, dxr = dxr_ofl,
          dividend, avg_smdivd, term, avg_term) %>%
@@ -1575,10 +1952,10 @@ ggplot(dt_lmdivd,
   scale_x_discrete(labels = c(
     "(Intercept)" = "截距项",
     "dividend" = "首年预测分派率差",
-    "I(dividend^2)" = expression(首年预测分派率差^2),
+    "I(dividend^2)" = expression(`首年预测分派率差`^2),
     "term" = "剩余年限差",
-    "I(term^2)" = expression(剩余年限差^2),
-    "I(term * dividend)" = expression(首年预测分派率差%*%剩余年限差)
+    "I(term^2)" = expression(`剩余年限差`^2),
+    "I(term * dividend)" = expression(`首年预测分派率差` %*% `剩余年限差`)
   )) +
   labs(y = "线性回归系数", x = NULL) +
   theme(axis.title = element_text(size = 14),
@@ -1594,6 +1971,7 @@ ggplot(dt_lmdivd,
 
 # 5. posterior ------------------------------------------------
 ## 5.1. 网下posterior ------------------------------------------------
+### posterior 数据
 dt_posterior <- dt_ofline_j %>%
   select(
     fcode, fclass, ftype, Tdate,
@@ -1602,7 +1980,7 @@ dt_posterior <- dt_ofline_j %>%
     pbrate
   ) %>%
   left_join(
-    select(dt_public_j, fcode, dividend, avg_smdivd, irr, avg_irr_sm), 
+    select(dt_public_j, fcode, dividend, avg_smdivd, irr, avg_irr_sm),
     by = "fcode"
   ) %>%
   left_join(
@@ -1611,7 +1989,9 @@ dt_posterior <- dt_ofline_j %>%
   ) %>%
   mutate(
     dpc_1 = vlookup(fcode, dt_dxr_D60[tt == 0, .(fcode, pc)]),
-    dpc_4 = vlookup(fcode, dt_dxr_D60[tt == 3, .(fcode, pc)])
+    dpc_4 = vlookup(fcode, dt_dxr_D60[tt == 3, .(fcode, pc)]),
+    dpc_20 = vlookup(fcode, dt_dxr_D60[tt == 19, .(fcode, pc)]),
+    dpc_60 = vlookup(fcode, dt_dxr_D60[tt == 59, .(fcode, pc)]),
   ) %>%
   mutate(
     dif_divd = dividend - avg_smdivd,
@@ -1624,18 +2004,21 @@ dt_posterior <- dt_ofline_j %>%
     og_pct = vlookup(fcode, dt_str_share[, c("fcode", "og_pct")]),
     cy_pct = vlookup(fcode, dt_str_share[, c("fcode", "cy_pct")]),
     mkt_pct = 100 - cy_pct - og_pct,
-    dpc_1 = (dpc_1 / plist - 1) * 100,
-    dpc_4 = (dpc_4 / plist - 1) * 100
+    across(starts_with("dpc_"), ~ (. / plist - 1) * 100)
   ) %>%
   select(
     -c(Tdate, p_low, p_up, plist, famt, public_amt, cy_pct,
        term, avg_term, dividend, avg_smdivd, irr, avg_irr_sm)
+  ) %>%
+  left_join(
+    select(dt_famt, fcode, famt_act, pubfamt_act), by = "fcode"
   )
 
 vec_predictors_chn %<>%
   str_replace_all("询价日", "T日") %>%
   `names<-`(names(vec_predictors_chn))
 
+### 单因子回归 (仅线性), t = 1, 4
 dt_lm_posterior <- lapply(
   names(dt_posterior)[-c(1:3)] %>% `[`(!grepl("dpc_", .)),
   function(predictor) {
@@ -1681,7 +2064,7 @@ dt_lm_posterior <- lapply(
   ) %>%
   filter(!(fclass == "产权类" & R2 < 0.2))
 
-
+### 单因子绘图, t = 1, 4
 ggplot(dt_lm_posterior,
        mapping = aes(x = predictor, y = coef, fill = dpc)) +
   facet_wrap(fclass ~ dpc, ncol = 2, scales = "free") +
@@ -1704,17 +2087,93 @@ ggplot(dt_lm_posterior,
     plot.margin = margin(10, 5, 5, 5)
   ) +
   geom_text(
-    aes(label = round(coef, 2),
+    aes(label = round(coef, 3),
         vjust = if_else(coef > 0, -.2, 1.2)),
     size = 3,
     position = position_dodge(width = 0.9)
   ) -> fig_lm_pc
 
+### 单因子回归 (仅线性), t = 20, 60
+dt_lm_posterior_20 <- lapply(
+  names(dt_posterior)[-c(1:3)] %>% `[`(!grepl("dpc_", .)),
+  function(predictor) {
+    dt_inner <- dt_posterior %>%
+      mutate(across(-c(fcode, fclass, ftype), ~ normalize(.)))
+    
+    fl1 <- as.formula(paste("dpc_20 ~", predictor))
+    dp1_prop <- lm(fl1, data = dt_inner[fclass == "产权类", ]) %>% summary()
+    dp1_oprt <- lm(fl1, data = dt_inner[fclass == "经营权类", ]) %>% summary()
+    dp1_pool <- lm(fl1, data = dt_inner) %>% summary()
+    
+    fl4 <- as.formula(paste("dpc_60 ~", predictor))
+    dp4_prop <- lm(fl4, data = dt_inner[fclass == "产权类", ]) %>% summary()
+    dp4_oprt <- lm(fl4, data = dt_inner[fclass == "经营权类", ]) %>% summary()
+    dp4_pool <- lm(fl4, data = dt_inner) %>% summary()
+    
+    lapply(list(
+      dp1_prop, dp1_oprt, dp1_pool, dp4_prop, dp4_oprt, dp4_pool
+    ), function(lmdt) {
+      data.table(
+        predictor = predictor,
+        coef = lmdt$coefficients[predictor, "Estimate"],
+        pvalue = lmdt$coefficients[predictor, "Pr(>|t|)"] %>% get_stars,
+        R2 = lmdt$r.squared
+      )
+    }) %>%
+      rbindlist() %>%
+      mutate(
+        dpc = rep(c("t1", "t4"), each = 3),
+        fclass = rep(c("产权类", "经营权类", "全样本"), 2)
+      ) %>% return()
+  }
+) %>% rbindlist() %>%
+  filter(pvalue != " ") %>%
+  mutate(predictor = vec_predictors_chn[predictor]) %>%
+  mutate(predictor = paste0(predictor, "\n", round(R2, 3), "")) %>%
+  # mutate(predictor = paste0("(", round(R2, 3), ") ", predictor)) %>%
+  arrange(-R2) %>%
+  mutate(
+    predictor = factor(predictor, levels = unique(predictor)),
+    fclass = factor(fclass, levels = c("全样本", "产权类", "经营权类")),
+    dpc = factor(dpc, levels = c("t1", "t4"), labels = c("上市第20日", "上市第60日"))
+  ) %>%
+  filter(!(fclass == "产权类" & R2 < 0.2))
+
+### 单因子绘图, t = 20, 60
+ggplot(dt_lm_posterior_20,
+       mapping = aes(x = predictor, y = coef, fill = dpc)) +
+  facet_wrap(fclass ~ dpc, ncol = 2, scales = "free") +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  theme_minimal() +
+  scale_fill_manual(
+    name = "", values = c("上市第20日" = "#5b0d07", "上市第60日" = "#b68e55")
+  ) +
+  guides(fill = "none") +
+  labs(
+    #x = expression("(标准化后) 因子, 单变量" ~ R^2),
+    x = NULL,
+    y = NULL
+  ) +
+  theme(
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 10),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(size = 14),
+    plot.margin = margin(10, 5, 5, 5)
+  ) +
+  geom_text(
+    aes(label = round(coef, 3),
+        vjust = if_else(coef > 0, -.2, 1.2)),
+    size = 3,
+    position = position_dodge(width = 0.9)
+  ) -> fig_lm_pc_20
+
+## 5.2. posterior核心因子临界点 ------------------------------------------------
 ## 核心因子: ofl_multi, p_list_quantile, index_60d
 ##           ofl_num, ofrate, secind_60d
 dt_posterior %>%
   select(
-    fcode, fclass, dpc_1, dpc_4, ofrate, p_list_quantile, secind_60d #,secind_60d
+    fcode, fclass, dpc_1, dpc_4, ofrate, p_list_quantile, secind_60d, famt_act #,secind_60d
   ) %>%
   pivot_longer(
     cols = c(dpc_1, dpc_4),
@@ -1722,7 +2181,7 @@ dt_posterior %>%
     values_to = "y_dpc"
   ) %>%
   pivot_longer(
-    cols = c(ofrate, p_list_quantile, secind_60d),
+    cols = c(ofrate, p_list_quantile, secind_60d, famt_act),
     names_to = "variable",
     values_to = "x_var"
   ) %>%
@@ -1737,15 +2196,21 @@ dt_posterior %>%
         fcode %in% c("180602.SZ", "180203.SZ") ~ "1",
       fclass != "全样本" & variable == "ofrate" & dpc == "dpc_4" &
         fcode %in% c("508086.SH", "508002.SH") ~ "1",
+
       fclass != "全样本" & variable == "p_list_quantile" & dpc == "dpc_1" &
         fcode %in% c("508022.SH", "508069.SH") ~ "1",
       fclass != "全样本" & variable == "p_list_quantile" & dpc == "dpc_4" &
         fcode %in% c("180603.SZ", "508069.SH") ~ "1",
-      
+
       fclass != "全样本" & variable == "secind_60d" & dpc == "dpc_1" &
         fcode %in% c("180103.SZ", "508008.SH") ~ "1",
       fclass != "全样本" & variable == "secind_60d" & dpc == "dpc_4" &
         fcode %in% c("180103.SZ", "508086.SH") ~ "1",
+      
+      fclass != "全样本" & variable == "famt_act" & dpc == "dpc_1" &
+        fcode %in% c("508056.SH", "180201.SZ") ~ "1",
+      fclass != "全样本" & variable == "famt_act" & dpc == "dpc_4" &
+        fcode %in% c("508056.SH", "508028.SH") ~ "1"
     )
   ) %>%
   mutate(corr = round(cor(y_dpc, x_var), 3), .by = c("dpc", "variable", "fclass")) %>%
@@ -1764,23 +2229,24 @@ dt_posterior %>%
     ),
     variable = factor(
       variable,
-      levels = c("ofrate", "p_list_quantile", "secind_60d"),
+      levels = c("ofrate", "p_list_quantile", "secind_60d", "famt_act"),
       labels = c("网下确认比例%", "发行价询价区间分位数%",
-                 "板块指数T日前60日涨跌幅")
+                 "板块指数T日前60日涨跌幅", "实际募集资金 (亿元)")
     )
   ) %>%
   mutate(v_tab = factor_with_valuelabel(
     variable,
     levels = c("网下确认比例%",
                "发行价询价区间分位数%",
-               "板块指数T日前60日涨跌幅"),
+               "板块指数T日前60日涨跌幅",
+               "实际募集资金 (亿元)"),
     value = corr2
-  ), .by = "dpc" ) %>% {
+  ), .by = "dpc") %>% {
     ggplot(data = ., mapping = aes(
       x = x_var, y = y_dpc,
       group = fclass, color = fclass
     )) +
-      facet_wrap(dpc ~ v_tab, scales = "free_x") +
+      facet_wrap(dpc ~ v_tab, scales = "free_x", nrow = 2) +
       geom_point(alpha = 0.7, size = 0.7, shape = 5) +
       geom_smooth(se = F, linewidth = 0.7, method = "lm") +
       geom_line(linetype = "dashed", linewidth = .7, alpha = 0.2) +
@@ -1804,10 +2270,112 @@ dt_posterior %>%
       )
   } -> fig_pc_posterior
 
-## 5.2. 公众posterior ------------------------------------------------
+### 核心因子图, t = 20, 60
+dt_posterior %>%
+  select(
+    fcode, fclass, dpc_20, dpc_60, ofrate, p_list_quantile, secind_60d, famt_act #,secind_60d
+  ) %>%
+  pivot_longer(
+    cols = c(dpc_20, dpc_60),
+    names_to = "dpc",
+    values_to = "y_dpc"
+  ) %>%
+  pivot_longer(
+    cols = c(ofrate, p_list_quantile, secind_60d, famt_act),
+    names_to = "variable",
+    values_to = "x_var"
+  ) %>%
+  filter(!is.na(x_var)) %>%
+  bind_rows(
+    mutate(., fclass = "全样本")
+  ) %>%
+  mutate(
+    point_filter = case_when(
+      .default = NA,
+      fclass != "全样本" & variable == "ofrate" & dpc == "dpc_20" &
+        fcode %in% c("180302.SZ", "508086.SH") ~ "1",
+      fclass != "全样本" & variable == "ofrate" & dpc == "dpc_60" &
+        fcode %in% c("508086.SH", "508017.SH") ~ "1",
+
+      fclass != "全样本" & variable == "p_list_quantile" & dpc == "dpc_20" &
+        fcode %in% c("180603.SZ", "508069.SH") ~ "1",
+      fclass != "全样本" & variable == "p_list_quantile" & dpc == "dpc_60" &
+        fcode %in% c("508008.SH", "180601.SZ") ~ "1",
+      
+      fclass != "全样本" & variable == "secind_60d" & dpc == "dpc_20" &
+        fcode %in% c("180103.SZ", "508008.SH") ~ "1",
+      fclass != "全样本" & variable == "secind_60d" & dpc == "dpc_60" &
+        fcode %in% c("180103.SZ", "508086.SH") ~ "1",
+      
+      fclass != "全样本" & variable == "famt_act" & dpc == "dpc_20" &
+        fcode %in% c("508056.SH", "180201.SZ") ~ "1",
+      fclass != "全样本" & variable == "famt_act" & dpc == "dpc_60" &
+        fcode %in% c("508056.SH", "508028.SH") ~ "1",
+    )
+  ) %>%
+  filter(!is.na(y_dpc)) %>%
+  mutate(corr = round(cor(y_dpc, x_var), 3), .by = c("dpc", "variable", "fclass")) %>%
+  mutate(
+    corr2 = paste0(
+      "全样本", "Corr = ", first(corr[fclass == "全样本"]), ", ",
+      "\n产权类", "Corr = ", first(corr[fclass == "产权类"]), ", ",
+      "经营权类", "Corr = ", first(corr[fclass == "经营权类"])
+    ),
+    .by = c("dpc", "variable")
+  ) %>%
+  mutate(
+    dpc = factor(
+      dpc, levels = c("dpc_20", "dpc_60"),
+      labels = c("上市第20日", "上市第60日")
+    ),
+    variable = factor(
+      variable,
+      levels = c("ofrate", "p_list_quantile", "secind_60d", "famt_act"),
+      labels = c("网下确认比例%", "发行价询价区间分位数%",
+                 "板块指数募集开始日前60日涨跌幅", "实际募集资金 (亿元)")
+    )
+  ) %>%
+  mutate(v_tab = factor_with_valuelabel(
+    variable,
+    levels = c("网下确认比例%", "发行价询价区间分位数%",
+               "板块指数募集开始日前60日涨跌幅", "实际募集资金 (亿元)"),
+    value = corr2
+  ), .by = "dpc") %>% {
+    ggplot(data = ., mapping = aes(
+      x = x_var, y = y_dpc,
+      group = fclass, color = fclass
+    )) +
+      facet_wrap(dpc ~ v_tab, scales = "free_x", nrow = 2) +
+      geom_point(alpha = 0.7, size = 0.7, shape = 5) +
+      geom_smooth(se = F, linewidth = 0.7, method = "lm") +
+      geom_line(linetype = "dashed", linewidth = .7, alpha = 0.2) +
+      geom_point(
+        data = filter(., point_filter == "1"),
+        alpha = 1, size = 2
+      ) +
+      scale_color_manual(name = NULL,
+                         values = c("经营权类" = "#b68e55",
+                                    "产权类" = "#5b0d07",
+                                    "全样本" = "skyblue")) +
+      labs(x = "REITs 特征", y = "收盘价格较发行价涨幅%") +
+      guides(fill = "none") +
+      theme_minimal() +
+      theme(
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12)
+      )
+  } -> fig_pc_posterior_20
+
+## 5.3. 公众posterior ------------------------------------------------
 dt_ofline_j %>%
+  left_join(
+    dt_famt[, .(fcode, famt_act)], by = join_by(fcode)
+  ) %>%
   # filter(fname != "华安百联消费REIT") %>%
-  select(fcode, fclass, x = ofrate, y = dxr_ofl) %>%
+  select(fcode, fclass, x = famt_act, y = pbrate) %>%
   bind_rows(
     mutate(., fclass = "全样本")
   ) %>%
@@ -1826,7 +2394,7 @@ dt_ofline_j %>%
     ggplot(data = ., mapping = aes(x = x, y = y,
                                    group = fclass, color = fclass)) +
       geom_point(alpha = 0.7, size = 0.7, shape = 5) +
-      geom_smooth(se = F, linewidth = 0.7, method = "loess") +
+      geom_smooth(se = F, linewidth = 0.7, method = "lm") +
       geom_line(linetype = "dashed", linewidth = .7, alpha = 0.1) +
       scale_color_manual(name = NULL,
                          values = c("经营权类" = "#b68e55",
@@ -1862,9 +2430,12 @@ ggsave(filename = paste0("output_v2/", "fig_idist", ".pdf"),
 ggsave(filename = paste0("output_v2/", "fig_time_d60", ".pdf"),
        plot = fig_time_d60,
        width = 9, height = 9)
+ggsave(filename = paste0("output_v2/", "fig_time_d60_vst0", ".pdf"),
+       plot = fig_time_d60_vst0,
+       width = 9, height = 9)
 ggsave(filename = paste0("output_v2/", "fig_industry_v2", ".pdf"),
        plot = fig_industry_v2,
-       width = 12, height = 5)
+       width = 12, height = 14)
 ggsave(filename = paste0("output_v2/", "fig_participation", ".pdf"),
        plot = fig_participation,
        width = 7, height = 4)
@@ -1901,24 +2472,42 @@ ggsave(filename = paste0("output_v2/", "fig_ofl_sector", ".pdf"),
 ggsave(filename = paste0("output_v2/", "fig_pub_sector", ".pdf"),
        plot = fig_pub_sector,
        width = 12, height = 8)
-ggsave(filename = paste0("output_v2/", "comb_fig_lm_linear_ofl", ".pdf"),
+ggsave(filename = paste0("output_v2/", "comb_fig_lm_linear_ofl", ".pdf"), # _unnormalized
        plot = comb_fig_lm_linear_ofl,
-       width = 8, height = 12)
-ggsave(filename = paste0("output_v2/", "comb_fig_lm_linear_pub", ".pdf"),
+       width = 12, height = 12)
+ggsave(filename = paste0("output_v2/", "comb_fig_lm_linear_pub", ".pdf"), # _unnormalized
        plot = comb_fig_lm_linear_pub,
-       width = 10, height = 12)
+       width = 12, height = 12)
 ggsave(filename = paste0("output_v2/", "comb_fig_lm_quadratic_ofl", ".pdf"),
        plot = comb_fig_lm_quadratic_ofl,
-       width = 10, height = 12)
+       width = 14, height = 12)
 ggsave(filename = paste0("output_v2/", "comb_fig_lm_quadratic_pub", ".pdf"),
        plot = comb_fig_lm_quadratic_pub,
-       width = 11, height = 12)
+       width = 14, height = 12)
 ggsave(filename = paste0("output_v2/", "fig_lm_pc", ".pdf"),
        plot = fig_lm_pc,
-       width = 14, height = 12)
+       width = 17, height = 12)
+ggsave(filename = paste0("output_v2/", "fig_lm_pc_20", ".pdf"),
+       plot = fig_lm_pc_20,
+       width = 17, height = 12)
 ggsave(filename = paste0("output_v2/", "fig_pc_posterior", ".pdf"),
        plot = fig_pc_posterior,
-       width = 14, height = 8)
-
-
-
+       width = 17, height = 8)
+ggsave(filename = paste0("output_v2/", "fig_pc_posterior_20", ".pdf"),
+       plot = fig_pc_posterior_20,
+       width = 17, height = 8)
+ggsave(filename = paste0("output_v2/", "fig_dxr_rollmean", ".pdf"),
+       plot = fig_dxr_rollmean,
+       width = 14, height = 5)
+ggsave(filename = paste0("output_v2/", "fig_dxr_rollmean_v2", ".pdf"),
+       plot = fig_dxr_rollmean_v2,
+       width = 7, height = 7)
+ggsave(filename = paste0("output_v2/", "fig_lm_str", ".pdf"),
+       plot = fig_lm_str,
+       width = 17, height = 15)
+ggsave(filename = paste0("output_v2/", "fig_ofl_amt", ".pdf"),
+       plot = fig_ofl_amt,
+       width = 10, height = 4)
+ggsave(filename = paste0("output_v2/", "fig_pub_amt", ".pdf"),
+       plot = fig_pub_amt,
+       width = 10, height = 4)
