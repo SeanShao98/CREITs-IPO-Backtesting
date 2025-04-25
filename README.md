@@ -9,6 +9,8 @@ The author holds the copyright for this project. This project is part of the Fix
 
 **Notice:** The data and code in the repository have been stripped of potential confidential information, making the project non-reproducible. Additionally, certain displayed output results have also been redacted for confidentiality.
 
+**[Update Apr 25, 2025]** The public version is now available in a [post](https://mp.weixin.qq.com/s/vJourm6hTRd7v6NpRpTgGQ) on the CICC FI Research Weixin account.
+
 ## intro
 
 The fundraising for C-REITs **precedes** their public listing on the stock exchange. Specifically, the fund’s total raised amount is determined during the filing stage, with fundraising targeting **strategic investors**, **offline investors**, and **public investors**. After confirming the subscription shares of strategic investors, the fund manager initiates a public bidding process for offline investors (i.e., the **pricing inquiry phase** of the C-REITs issuance). Based on the bids submitted by offline investors, the fund manager determines the offering price and announces the fundraising period. During this period, offline investors are required to pay the subscription amount at the offering price. Public investors may also purchase any desired amount of fund shares at the offering price during the fundraising period.
