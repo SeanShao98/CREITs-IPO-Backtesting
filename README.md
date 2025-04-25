@@ -33,6 +33,8 @@ This project calculates the returns of strict IPO/post-IPO trading strategies, u
 
 `proc_v2_4_cx.R`: (main `R` code) strategy return calculation (post-IPO trading)
 
+`proc_v2_5_dx_3.R`: (main `R` code) supplementary factor analysis (IPO trading), part 3
+
 `REITs估值-v2.xlsx`: public data of fund valuation
 
 `REITs基金价格-询价日.xls`: public data of pricing inquiry
